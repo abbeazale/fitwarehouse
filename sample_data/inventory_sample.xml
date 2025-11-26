@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<inventory_records>
+    <item>
+        <productName>Resistance Bands</productName>
+        <quantity>25</quantity>
+        <warehouseLocation>Zone A</warehouseLocation>
+        <submittedBy>Jordan</submittedBy>
+    </item>
+    <item>
+        <productName>Yoga Mats</productName>
+        <quantity>50 units</quantity>
+        <warehouseLocation>Zone B</warehouseLocation>
+        <submittedBy>Alex</submittedBy>
+    </item>
+    <item>
+        <productName>Dumbbells 10lb</productName>
+        <quantity>30</quantity>
+        <warehouseLocation>Zone A</warehouseLocation>
+        <submittedBy>Sam</submittedBy>
+    </item>
+    <item>
+        <productName>Jump Ropes</productName>
+        <quantity>40</quantity>
+        <warehouseLocation>Zone C</warehouseLocation>
+        <submittedBy>Taylor</submittedBy>
+    </item>
+    <item>
+        <productName>Kettlebells 20lb</productName>
+        <quantity>15 units</quantity>
+        <warehouseLocation>Zone B</warehouseLocation>
+        <submittedBy>Morgan</submittedBy>
+    </item>
+</inventory_records>
+
