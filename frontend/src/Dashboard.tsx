@@ -1,321 +1,385 @@
-import { useState, useEffect, type ChangeEvent, type FormEvent } from 'react'
-import { supabase } from './lib/supabase'
+import { useEffect, useMemo, useState } from 'react'
 import Header from './components/Header'
-import type { HealthRecord } from './types/Records'
+import { Line, Bar } from 'react-chartjs-2'
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Tooltip,
+  Legend,
+} from 'chart.js'
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, Tooltip, Legend)
+
+type WeeklySeriesPoint = {
+  weekStart: string
+  ageGroup: string
+  totalDistanceKm: number
+  runnerCount: number
+  avgDistanceKmPerRunner: number
+}
+
+type OverviewResponse = {
+  weeks: number
+  series: WeeklySeriesPoint[]
+  kpis: {
+    totalDistanceKm: number
+    avgWeeklyDistanceKm: number
+    totalRunners: number
+    latestWeekDistanceKm: number
+  }
+}
+
+type TopCountryEntry = {
+  rank: number
+  country: string
+  totalDistanceKm: number
+  avgPaceMinPerKm: number | null
+}
+
+type TopCountriesResponse = {
+  weeks: number
+  countries: TopCountryEntry[]
+}
+
+type MajorGenderEntry = {
+  majorName: string
+  gender: string
+  runnerCount: number
+}
+
+type MajorGenderResponse = {
+  series: MajorGenderEntry[]
+}
 
 const normalizeBaseUrl = (value: unknown, fallback: string) => {
   const url = typeof value === 'string' && value.trim().length > 0 ? value : fallback
   return url.replace(/\/$/, '')
 }
 
-const etlBaseUrl = normalizeBaseUrl(import.meta.env.VITE_ETL_BASE_URL, 'http://localhost:8000')
+const rawApiBase =
+  import.meta.env.VITE_BACKEND_BASE_URL ?? import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:5018'
+const apiBaseUrl = normalizeBaseUrl(rawApiBase, 'http://localhost:5018')
 
 export default function Dashboard() {
-  
-  const [records, setRecords] = useState<HealthRecord[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [file, setFile] = useState<File | null>(null)
-  const [uploading, setUploading] = useState(false)
-  const [uploadMessage, setUploadMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
-  const [dragActive, setDragActive] = useState(false)
-
-
-  const loadRecords = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('inventory')
-        .select('*')
-        .order('processed_at_utc', { ascending: false })
-        .limit(20)
-
-      if (error) throw error
-
-      const transformedRecords = (data || []).map((item) => ({
-        id: item.id,
-        productName: item.product_name,
-        quantity: item.quantity,
-        warehouseLocation: item.warehouse_location,
-        submittedBy: item.submitted_by,
-        processedAtUtc: item.processed_at_utc,
-      }))
-
-      setRecords(transformedRecords)
-    } catch (error) {
-      console.error('Failed to load records', error)
-    } finally {
-      setIsLoading(false)
-    }
-  }
+  const [data, setData] = useState<OverviewResponse | null>(null)
+  const [topCountries, setTopCountries] = useState<TopCountriesResponse | null>(null)
+  const [majorGender, setMajorGender] = useState<MajorGenderResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    loadRecords()
+    const controller = new AbortController()
+    setLoading(true)
+    setError(null)
+
+    const overviewPromise = fetch(`${apiBaseUrl}/api/analytics/overview?weeks=12`, { signal: controller.signal })
+      .then(async (res) => {
+        if (!res.ok) {
+          const txt = await res.text()
+          throw new Error(txt || `HTTP ${res.status}`)
+        }
+        return res.json() as Promise<OverviewResponse>
+      })
+      .then(setData)
+
+    const countriesPromise = fetch(`${apiBaseUrl}/api/analytics/top-countries?weeks=12&limit=50`, {
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const txt = await res.text()
+          throw new Error(txt || `HTTP ${res.status}`)
+        }
+        return res.json() as Promise<TopCountriesResponse>
+      })
+      .then(setTopCountries)
+
+    Promise.all([overviewPromise, countriesPromise])
+      .then(() =>
+        fetch(`${apiBaseUrl}/api/analytics/major-gender-distribution?limit=10`, { signal: controller.signal })
+          .then(async (res) => {
+            if (!res.ok) {
+              const txt = await res.text()
+              throw new Error(txt || `HTTP ${res.status}`)
+            }
+            return res.json() as Promise<MajorGenderResponse>
+          })
+          .then(setMajorGender)
+      )
+      .catch((err) => {
+        if (err.name !== 'AbortError') setError('Failed to load analytics')
+      })
+      .finally(() => setLoading(false))
+
+    return () => controller.abort()
   }, [])
 
- 
+  const groupedSeries = useMemo(() => {
+    if (!data) return {}
+    const map: Record<string, { week: Date; value: number }[]> = {}
+    data.series.forEach((pt) => {
+      const key = pt.ageGroup || 'Unknown'
+      if (!map[key]) map[key] = []
+      map[key].push({ week: new Date(pt.weekStart), value: pt.totalDistanceKm })
+    })
+    Object.values(map).forEach((arr) => arr.sort((a, b) => a.week.getTime() - b.week.getTime()))
+    return map
+  }, [data])
 
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true)
-    } else if (e.type === 'dragleave') {
-      setDragActive(false)
-    }
-  }
+  const chartWeeks = useMemo(() => {
+    if (!data) return []
+    const unique = Array.from(new Set(data.series.map((s) => s.weekStart)))
+    return unique.sort()
+  }, [data])
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragActive(false)
+  const colors = ['#10b981', '#22d3ee', '#a855f7', '#f97316', '#38bdf8', '#f43f5e']
+  const ageGroups = Object.keys(groupedSeries)
 
-    const droppedFile = e.dataTransfer.files?.[0]
-    if (droppedFile) {
-      validateAndSetFile(droppedFile)
-    }
-  }
-
-  const validateAndSetFile = (selectedFile: File) => {
-    const fileType = selectedFile.name.split('.').pop()?.toLowerCase()
-    if (fileType === 'csv' || fileType === 'xml') {
-      setFile(selectedFile)
-      setUploadMessage(null)
-    } else {
-      setUploadMessage({ type: 'error', text: 'Please select a CSV or XML file' })
-      setFile(null)
-    }
-  }
-
-  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0]
-    if (selectedFile) {
-      validateAndSetFile(selectedFile)
-    }
-  }
-
-  const handleUpload = async (e: FormEvent) => {
-    e.preventDefault()
-    if (!file) {
-      setUploadMessage({ type: 'error', text: 'Please select a file' })
-      return
-    }
-
-    setUploading(true)
-    setUploadMessage(null)
-
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-
-      const response = await fetch(`${etlBaseUrl}/upload`, {
-        method: 'POST',
-        body: formData,
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData?.detail || 'Upload failed')
-      }
-
-      const result = await response.json()
-      setUploadMessage({
-        type: 'success',
-        text: `Successfully processed ${result.recordsProcessed || 0} records`,
-      })
-      setFile(null)
-
-      const fileInput = document.getElementById('file-input') as HTMLInputElement
-      if (fileInput) fileInput.value = ''
-
-      loadRecords()
-    } catch (err) {
-      setUploadMessage({
-        type: 'error',
-        text: err instanceof Error ? err.message : 'Upload failed',
-      })
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  
   return (
-    <div className="min-h-screen bg-slate-950">
-      {/* Header */}
-      <Header/>
+    <div className="min-h-screen bg-slate-950 text-slate-50">
+      <Header />
 
-      <main className="max-w-5xl mx-auto px-4 sm:px-8 py-8">
-        {/* Header */}
-        <header className="mb-8">
-          <h1 className="text-3xl font-semibold text-slate-50 mb-2 tracking-tight">Health Data Dashboard</h1>
-          <p className="text-slate-400">Upload and manage your health records</p>
-        </header>
+      <main className="max-w-6xl mx-auto px-4 sm:px-8 py-8 space-y-8">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight mb-2">Overview</h1>
+          <p className="text-slate-400">Distance trends by age group and quick KPIs</p>
+        </div>
 
-        {/* Upload Section */}
-        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 mb-8">
-          <h2 className="text-xl font-semibold text-slate-50 mb-5">Upload Health Data File</h2>
-          
-          <form onSubmit={handleUpload}>
-            <div
-              className={`border-2 border-dashed rounded-xl p-8 text-center transition relative ${
-                dragActive
-                  ? 'border-teal-500 bg-teal-500/10'
-                  : file
-                  ? 'border-slate-700 bg-slate-800'
-                  : 'border-slate-700 hover:border-teal-500 hover:bg-teal-500/5'
-              }`}
-              onDragEnter={handleDrag}
-              onDragLeave={handleDrag}
-              onDragOver={handleDrag}
-              onDrop={handleDrop}
-            >
-              <input
-                type="file"
-                id="file-input"
-                accept=".csv,.xml"
-                onChange={handleFileChange}
-                disabled={uploading}
-                className="absolute inset-0 opacity-0 cursor-pointer"
-              />
+        {loading ? (
+          <div className="flex items-center justify-center py-16 text-slate-400">Loading...</div>
+        ) : error ? (
+          <div className="bg-red-500/10 border border-red-500/30 text-red-200 px-4 py-3 rounded-lg">{error}</div>
+        ) : data ? (
+          <>
+            <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <KpiCard label="Total Distance" value={formatNumber(data.kpis.totalDistanceKm)} suffix="km" />
+              <KpiCard label="Avg Weekly Distance / Runner" value={formatNumber(data.kpis.avgWeeklyDistanceKm)} suffix="km" />
+              <KpiCard label="Total Runners" value={formatNumber(data.kpis.totalRunners)} />
+              <KpiCard label="Latest Week Distance" value={formatNumber(data.kpis.latestWeekDistanceKm)} suffix="km" />
+            </section>
 
-              {file ? (
-                <div className="flex items-center gap-4 text-left">
-                  <svg className="w-10 h-10 text-teal-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                    <polyline points="14,2 14,8 20,8" />
-                  </svg>
-                  <div className="flex-1">
-                    <span className="block font-medium text-slate-200">{file.name}</span>
-                    <span className="text-sm text-slate-500">{(file.size / 1024).toFixed(2)} KB</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setFile(null)}
-                    className="p-2 hover:bg-red-500/10 text-slate-400 hover:text-red-500 rounded-lg transition"
-                    aria-label="Remove file"
-                  >
-                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  </button>
+            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-xl font-semibold">Weekly distance by age group</h2>
+                  <p className="text-slate-500 text-sm">Stacked multi-line across the last {data.weeks} weeks</p>
                 </div>
-              ) : (
-                <label htmlFor="file-input" className="flex flex-col items-center gap-3 cursor-pointer">
-                  <svg className="w-10 h-10 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                    <polyline points="17,8 12,3 7,8" />
-                    <line x1="12" y1="3" x2="12" y2="15" />
-                  </svg>
-                  <span className="text-slate-400">
-                    Drag and drop your file here, or <strong className="text-teal-500">browse</strong>
-                  </span>
-                  <span className="text-sm text-slate-500">Supports CSV and XML files</span>
-                </label>
-              )}
-            </div>
-
-            {uploadMessage && (
-              <div className={`mt-4 flex items-center gap-2 px-4 py-3 rounded-lg text-sm ${
-                uploadMessage.type === 'success'
-                  ? 'bg-green-500/15 text-green-500'
-                  : 'bg-red-500/15 text-red-500'
-              }`}>
-                {uploadMessage.type === 'success' ? (
-                  <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-                    <polyline points="22,4 12,14.01 9,11.01" />
-                  </svg>
-                ) : (
-                  <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="15" y1="9" x2="9" y2="15" />
-                    <line x1="9" y1="9" x2="15" y2="15" />
-                  </svg>
-                )}
-                {uploadMessage.text}
               </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={!file || uploading}
-              className="mt-4 w-full flex items-center justify-center gap-2 bg-teal-500 hover:bg-teal-600 text-white font-medium py-3 rounded-xl transition-all hover:shadow-lg hover:shadow-teal-500/30 hover:-translate-y-0.5 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0"
-            >
-              {uploading ? (
-                <>
-                  <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  Uploading...
-                </>
+              {ageGroups.length === 0 ? (
+                <div className="text-slate-500">No data</div>
               ) : (
-                <>
-                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                    <polyline points="17,8 12,3 7,8" />
-                    <line x1="12" y1="3" x2="12" y2="15" />
-                  </svg>
-                  Upload File
-                </>
+                <LineChart height={360} series={groupedSeries} colors={colors} weeks={chartWeeks} />
               )}
-            </button>
-          </form>
-        </section>
+            </section>
 
-        {/* Records Section */}
-        <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-          <h2 className="text-xl font-semibold text-slate-50 mb-5">Recent Records</h2>
+            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-xl font-semibold">Top countries by distance</h2>
+                  <p className="text-slate-500 text-sm">Last {topCountries?.weeks ?? data.weeks} weeks</p>
+                </div>
+              </div>
+              {!topCountries || topCountries.countries.length === 0 ? (
+                <div className="text-slate-500">No data</div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm text-left text-slate-300">
+                    <thead className="text-xs uppercase text-slate-500 border-b border-slate-800">
+                      <tr>
+                        <th className="px-3 py-2">Rank</th>
+                        <th className="px-3 py-2">Country</th>
+                        <th className="px-3 py-2">Total Distance (km)</th>
+                        <th className="px-3 py-2">Avg Pace (min/km)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {topCountries.countries.map((c) => (
+                        <tr key={c.rank} className="border-b border-slate-800/60">
+                          <td className="px-3 py-2 text-slate-400">{c.rank}</td>
+                          <td className="px-3 py-2 font-medium text-slate-100">{c.country}</td>
+                          <td className="px-3 py-2">{c.totalDistanceKm.toFixed(0)}</td>
+                          <td className="px-3 py-2">{c.avgPaceMinPerKm ? c.avgPaceMinPerKm.toFixed(2) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
 
-          {isLoading ? (
-            <div className="flex flex-col items-center justify-center py-12">
-              <div className="w-10 h-10 border-3 border-slate-700 border-t-teal-500 rounded-full animate-spin mb-4" />
-              <p className="text-slate-400">Loading records...</p>
-            </div>
-          ) : records.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-slate-400">
-              <svg className="w-12 h-12 text-slate-600 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14,2 14,8 20,8" />
-                <line x1="16" y1="13" x2="8" y2="13" />
-                <line x1="16" y1="17" x2="8" y2="17" />
-                <polyline points="10,9 9,9 8,9" />
-              </svg>
-              <p className="font-medium text-slate-300 mb-1">No records yet</p>
-              <span className="text-sm">Upload a file to get started</span>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-slate-800">
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Product</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Quantity</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Location</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Submitted By</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {records.map((record) => (
-                    <tr key={record.id} className="border-b border-slate-800 last:border-0 hover:bg-slate-800/50 transition">
-                      <td className="py-3.5 px-4 text-slate-200">{record.productName}</td>
-                      <td className="py-3.5 px-4">
-                        <span className="inline-block px-3 py-1 bg-teal-500/15 text-teal-500 rounded-lg text-sm font-medium">
-                          {record.quantity}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-slate-200">{record.warehouseLocation}</td>
-                      <td className="py-3.5 px-4 text-slate-200">{record.submittedBy}</td>
-                      <td className="py-3.5 px-4 text-slate-400">{new Date(record.processedAtUtc).toLocaleDateString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
+            <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-xl font-semibold">Gender distribution by major</h2>
+                  <p className="text-slate-500 text-sm">Top 10 majors by runner count.</p>
+                </div>
+              </div>
+              {!majorGender || majorGender.series.length === 0 ? (
+                <div className="text-slate-500">No data</div>
+              ) : (
+                <MajorGenderBar data={majorGender.series} />
+              )}
+            </section>
+          </>
+        ) : null}
       </main>
+    </div>
+  )
+}
+
+type KpiCardProps = {
+  label: string
+  value: string
+  suffix?: string
+}
+
+function KpiCard({ label, value, suffix }: KpiCardProps) {
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+      <p className="text-sm text-slate-500">{label}</p>
+      <div className="mt-2 text-2xl font-semibold text-teal-300">
+        {value}
+        {suffix ? <span className="text-slate-400 text-base ml-1">{suffix}</span> : null}
+      </div>
+    </div>
+  )
+}
+
+type LineChartProps = {
+  height: number
+  series: Record<string, { week: Date; value: number }[]>
+  colors: string[]
+  weeks: string[]
+}
+
+function LineChart({ height, series, colors, weeks }: LineChartProps) {
+  const labels = weeks.map((w) => new Date(w)).sort((a, b) => a.getTime() - b.getTime())
+
+  const datasets = Object.entries(series).map(([ageGroup, points], idx) => {
+    const map = new Map(points.map((p) => [p.week.toDateString(), p.value]))
+    return {
+      label: ageGroup,
+      data: labels.map((d) => map.get(d.toDateString()) ?? null),
+      borderColor: colors[idx % colors.length],
+      backgroundColor: colors[idx % colors.length],
+      fill: false,
+      tension: 0.2,
+      spanGaps: true,
+    }
+  })
+
+  const data = {
+    labels: labels.map((d) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })),
+    datasets,
+  }
+
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        labels: { color: '#cbd5e1' },
+      },
+      tooltip: {
+        callbacks: {
+          label: (ctx: any) => `${ctx.dataset.label}: ${Number(ctx.raw ?? 0).toFixed(1)} km`,
+        },
+      },
+    },
+    scales: {
+      x: {
+        ticks: { color: '#94a3b8' },
+        grid: { color: '#1e293b' },
+      },
+      y: {
+        ticks: {
+          color: '#94a3b8',
+          callback: (val: any) => formatNumber(Number(val)),
+        },
+        grid: { color: '#1e293b' },
+        beginAtZero: true,
+      },
+    },
+  }
+
+  return (
+    <div className="relative" style={{ height }}>
+      <Line data={data} options={options} />
+    </div>
+  )
+}
+
+const formatNumber = (value: number) => {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`
+  return value.toFixed(0)
+}
+
+type MajorGenderBarProps = {
+  data: MajorGenderEntry[]
+}
+
+function MajorGenderBar({ data }: MajorGenderBarProps) {
+  const majors = Array.from(new Set(data.map((d) => d.majorName)))
+  const genders = Array.from(new Set(data.map((d) => d.gender))).sort()
+  const colors = ['#10b981', '#22d3ee', '#f97316', '#a855f7', '#38bdf8', '#f43f5e']
+
+  const datasets = genders.map((g, idx) => {
+    const label = g === 'M' ? 'Male' : g === 'F' ? 'Female' : 'Unknown'
+    return {
+      label,
+      data: majors.map((m) => {
+        const row = data.find((d) => d.majorName === m && d.gender === g)
+        return row ? row.runnerCount : 0
+      }),
+      backgroundColor: colors[idx % colors.length],
+      stack: 'gender',
+    }
+  })
+
+  const chartData = {
+    labels: majors,
+    datasets,
+  }
+
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        labels: { color: '#cbd5e1' },
+      },
+      tooltip: {
+        callbacks: {
+          label: (ctx: any) => `${ctx.dataset.label}: ${ctx.raw}`,
+        },
+      },
+    },
+    scales: {
+      x: {
+        ticks: { color: '#94a3b8' },
+        grid: { color: '#1e293b' },
+        stacked: true,
+      },
+      y: {
+        ticks: {
+          color: '#94a3b8',
+          callback: (val: any) => Number(val).toFixed(0),
+        },
+        grid: { color: '#1e293b' },
+        beginAtZero: true,
+        stacked: true,
+      },
+    },
+  }
+
+  return (
+    <div className="relative" style={{ height: 400 }}>
+      <Bar data={chartData} options={options} />
     </div>
   )
 }

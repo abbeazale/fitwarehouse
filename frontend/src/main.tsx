@@ -2,32 +2,22 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import './index.css'
-import App from './App.tsx'
-import Login from './Login.tsx'
-import Signup from './Signup.tsx'
 import Dashboard from './Dashboard.tsx'
-import ProtectedRoute from './components/ProtectedRoute.tsx'
+import Trends from './Trends.tsx'
+import Athlete from './Athlete.tsx'
 
 const router = createBrowserRouter([
   {
     path: '/',
-    element: <App />,
+    element: <Dashboard />,
   },
   {
-    path: '/login',
-    element: <Login />,
+    path: '/trends',
+    element: <Trends />,
   },
   {
-    path: '/signup',
-    element: <Signup />,
-  },
-  {
-    path: '/dashboard',
-    element: (
-      <ProtectedRoute>
-        <Dashboard />
-      </ProtectedRoute>
-    ),
+    path: '/athlete',
+    element: <Athlete />,
   },
 ])
 
