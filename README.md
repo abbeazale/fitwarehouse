@@ -6,7 +6,7 @@ This project ingests long-distance running data (weekly athlete metrics), loads 
 - **Warehouse**: PostgreSQL (star schema with fact `fact_run_weekly` and dimensions for athlete, age group, gender, country, date, major). Staging tables (`stg_runs_raw`, `stg_ingest_log`) capture raw loads.
 - **Why**: To analyze trends and cohorts in running volume/pace across age groups, gender, country, and marathon majors; to spot differences in training load, pace distributions, and progression.
 
-## Questions/associations (examples)
+## Questions/associations (examples)i
 - How does weekly distance or pace trend by age group, gender, or country over time?
 - Which age groups or genders log the most distance or fastest pace?
 - How does major participation (e.g., Boston, Berlin, London) relate to training volume?
@@ -116,11 +116,10 @@ where a.athlete_id_source = @athleteId;
 - Kaggle “Long Distance Running Dataset” (weekly runs): `run_ww_2019_w.csv`, `run_ww_2020_w.csv`.
 
 ## Technology stack
-- **Database**: PostgreSQL (Supabase initially; local Postgres supported).  
+- **Database**: PostgreSQL 
 - **Backend**: C# ASP.NET Core Web API with Npgsql EF Core mappings for the star schema; raw SQL for OLAP endpoints.  
 - **ETL**: Python CLI (psycopg/csv) to load CSVs into staging; C# promotes to dims/fact.  
-- **Frontend**: React + Vite; Chart.js for visuals; consumes backend analytics endpoints.  
-- **Auth**: Not used for analytics (public read); Supabase client remains for legacy inventory prototype.
+- **Frontend**: React + Vite; Chart.js for visuals.
 
 ## Current analytics endpoints (high level)
 - `/api/analytics/overview`: KPIs + weekly distance by age group (per-runner average).
@@ -131,6 +130,6 @@ where a.athlete_id_source = @athleteId;
 - `/api/analytics/athlete-pace`: pace progression + majors for a given athlete.
 
 ## Frontend views
-- **Overview**: KPIs, weekly distance by age group, top countries table, gender distribution by major (stacked bar).
+- **Overview**: General quereis, weekly distance by age group, top countries table, gender distribution by major.
 - **Trends**: Pace by gender+age group, distance by major year, distance by gender.
 - **Athlete**: Per-athlete pace over time + majors list.
